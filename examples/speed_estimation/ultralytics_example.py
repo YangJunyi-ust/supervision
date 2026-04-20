@@ -2,6 +2,7 @@ from collections import defaultdict, deque
 
 import cv2
 import numpy as np
+from tqdm import tqdm
 from ultralytics import YOLO
 
 import supervision as sv
@@ -41,6 +42,7 @@ def main(
     target_video_path: str,
     confidence_threshold: float = 0.3,
     iou_threshold: float = 0.7,
+    show_preview: bool = True,
 ):
     """
     Vehicle Speed Estimation using Ultralytics and Supervision.
@@ -50,6 +52,7 @@ def main(
         target_video_path: Path to the target video file (output)
         confidence_threshold: Confidence threshold for the model
         iou_threshold: IOU threshold for the model
+        show_preview: If True, open an OpenCV window while processing (press q to stop)
     """
     video_info = sv.VideoInfo.from_video_path(video_path=source_video_path)
     model = YOLO("yolo11x.pt")
@@ -82,8 +85,17 @@ def main(
     coordinates = defaultdict(lambda: deque(maxlen=video_info.fps))
 
     with sv.VideoSink(target_video_path, video_info) as sink:
-        for frame in frame_generator:
-            result = model(frame, conf=confidence_threshold, iou=iou_threshold)[0]
+        for frame in tqdm(
+            frame_generator,
+            total=video_info.total_frames,
+            desc="Speed estimation",
+        ):
+            result = model(
+                frame,
+                conf=confidence_threshold,
+                iou=iou_threshold,
+                verbose=False,
+            )[0]
             detections = sv.Detections.from_ultralytics(result)
             detections = detections[polygon_zone.trigger(detections)]
             detections = byte_track.update_with_detections(detections=detections)
@@ -120,10 +132,12 @@ def main(
             )
 
             sink.write_frame(annotated_frame)
-            cv2.imshow("frame", annotated_frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-        cv2.destroyAllWindows()
+            if show_preview:
+                cv2.imshow("frame", annotated_frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+        if show_preview:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

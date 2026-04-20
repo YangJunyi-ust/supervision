@@ -1,0 +1,134 @@
+\documentclass[a4paper, 11pt, fontset=fandol]{ctexart}
+
+% 页面边距设置
+\usepackage{geometry}
+\geometry{left=2.5cm, right=2.5cm, top=3cm, bottom=3cm}
+
+% 常用宏包
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{titlesec}
+
+% 链接颜色设置
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+}
+
+\title{\textbf{无人机人流统计系统\\技术落地与实施方案}}
+\author{算法实施团队}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+
+\setcounter{page}{1}
+
+\section{项目概述 (Project Overview)}
+
+\subsection{业务背景与目标}
+本项目旨在解决大型户外场景（如集会、景区、广场）下的实时人流监控与计数需求。通过无人机高空俯拍视角，结合深度学习目标检测算法，实现对目标区域内人群密度的动态感知与越线计数，为安防调度和客流限流提供数据支撑。
+
+\subsection{应用场景定义}
+\begin{itemize}[label=\textbullet]
+    \item \textbf{工作环境：} 昼间（光照条件良好）。
+    \item \textbf{飞行参数：} 相对高度 30--50 米，云台俯仰角 $45^\circ \sim 90^\circ$（垂直或半垂直俯拍）。
+    \item \textbf{复杂因素：} 存在伞流遮挡、树木遮挡及高密度人群聚集。
+\end{itemize}
+
+\subsection{核心交付指标 (KPIs)}
+\begin{itemize}[label=\textbullet]
+    \item \textbf{计数准确率：} 在中等密度无严重遮挡场景下，识别准确率 $\ge 90\%$。
+    \item \textbf{系统延迟：} 端到端处理延迟 $\le 2$ 秒。
+    \item \textbf{处理性能：} 边缘端/云端单节点支持至少 2 路 1080P/30fps 视频流的实时推理。
+\end{itemize}
+
+\vspace{1em}
+\hrule
+\vspace{1em}
+
+\section{系统整体架构 (System Architecture)}
+
+本系统采用“端-边-云”协同架构：
+\begin{enumerate}
+    \item \textbf{数据采集端：} 无人机通过推流协议（如 RTMP/RTSP）将高清视频流实时传回地面控制站或云服务器。
+    \item \textbf{算法推理端：} 视频流拉取模块接收数据后进行抽帧，送入 AI 引擎（YOLO + 追踪算法）进行计算。
+    \item \textbf{业务处理端：} 结合 Supervision 库，将检测坐标映射到用户划定的物理区域（PolygonZone/LineZone），触发计数逻辑。
+    \item \textbf{数据展示端：} 实时统计数据持久化至数据库，并通过 Web 端大屏进行可视化展示。
+\end{enumerate}
+
+\section{核心算法方案 (Core Algorithm Pipeline)}
+
+\subsection{模型选型与优化}
+\begin{itemize}
+    \item \textbf{基础模型：} 选用 \textbf{YOLOv11} (s或m版本) 以兼顾推理速度与检测精度。
+    \item \textbf{检测目标定义：} 针对高空俯拍及严重遮挡场景，弃用常规的全人（\texttt{person}）检测，重新标注并训练针对 \textbf{人头（\texttt{head}）} 的专用检测模型。
+    \item \textbf{超参数设置：} 置信度阈值（\texttt{conf\_threshold}）初始设为 0.35，NMS 交并比阈值（\texttt{iou\_threshold}）设为 0.45，需根据现场拥挤度动态微调。
+\end{itemize}
+
+\subsection{目标追踪 (Tracking)}
+采用 \textbf{ByteTrack} 或 \textbf{BoT-SORT} 算法进行帧间 ID 匹配。通过调节 \texttt{lost\_track\_buffer} 参数（建议 30-60 帧），以应对行人被雨伞或树木短暂遮挡导致的 ID 丢失问题。
+
+\subsection{业务逻辑后处理 (Supervision)}
+\begin{itemize}
+    \item \textbf{多边形区域 (PolygonZone)：} 避免区域边缘紧贴视频画框，预留 10\% 像素宽度的缓冲区，防止边缘截断导致的误报。
+    \item \textbf{触发锚点 (Triggering Anchor)：} 为保障统计稳定性，统一采用目标的 \textbf{底部中心点 (BOTTOM\_CENTER)} 作为进出区域的判定基准。
+\end{itemize}
+
+\section{关键难点与应对策略 (Challenges \& Solutions)}
+
+\subsection{无人机视角的“小目标”漏检}
+\textbf{问题：} 高空俯拍导致画面中人头像素极少（低于 $10 \times 10$ 像素）。\\
+\textbf{对策：} 引入 \textbf{SAHI (Slicing Aided Hyper Inference)} 切片推理技术，将高分辨率画面切分为多个 Patch 进行推理再拼接，极大提升极小目标的召回率，但需权衡计算耗时。
+
+\subsection{密集场景与伞群遮挡}
+\textbf{问题：} 雨天或烈日下，雨伞/阳伞会完全遮挡人体特征。\\
+\textbf{对策：} 
+\begin{enumerate}
+    \item 将“伞”作为一个独立类别加入训练集，在逻辑层将伞与人头视为等效的计数单位。
+    \item 引入帧间平滑策略，设定连续 3-5 帧在区域内才计为有效目标，过滤因抖动产生的瞬时消失。
+\end{enumerate}
+
+\subsection{云台抖动导致的区域漂移}
+\textbf{问题：} 无人机悬停时的微小晃动会导致静态设定的 ROI 区域与实际物理地面错位。\\
+\textbf{对策：} 在算法预处理阶段引入轻量级的特征点匹配（如 ORB/SIFT 结合仿射变换）进行视频防抖对齐，保证背景的相对静止。
+
+\section{性能优化与工程化实施 (Engineering)}
+
+\begin{itemize}
+    \item \textbf{推理加速：} 导出模型为 TensorRT (.engine) 格式，开启 FP16 半精度推理，显著降低 GPU 显存占用并提升 FPS。
+    \item \textbf{跳帧处理：} 人行进速度有限，无需逐帧处理。实施“隔帧推理（每 3 帧处理 1 帧）+ 线性插值追踪”策略，将系统吞吐量提升至原来的 2-3 倍。
+    \item \textbf{容灾机制：} 增加视频流断联重试机制，并在显存溢出 (OOM) 或 Tracker 字典过大时，实施优雅重启与缓存清理策略。
+\end{itemize}
+
+\section{测试方案与验收标准 (Testing \& Validation)}
+
+\subsection{评估方法}
+\begin{itemize}
+    \item \textbf{真值采集：} 录制 5 段不同场景（密度、光照）的 3 分钟无人机视频，由人工逐帧点数，记录进出总人数作为 Ground Truth。
+    \item \textbf{指标公式：} 准确率 = $(1 - \frac{| \text{系统计数} - \text{人工计数} |}{\text{人工计数}}) \times 100\%$。
+\end{itemize}
+
+\subsection{验收阈值}
+\begin{table}[h]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{场景类型} & \textbf{可接受最大误差率} & \textbf{最低处理帧率 (FPS)} \\
+        \midrule
+        稀疏/标准场景 & $\pm 5\%$ & 20 \\
+        极密/遮挡场景 & $\pm 12\%$ & 15 \\
+        \bottomrule
+    \end{tabular}
+    \caption{系统性能验收指标}
+\end{table}
+
+\end{document}

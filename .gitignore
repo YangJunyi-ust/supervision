@@ -160,3 +160,4 @@ data/
 # Claude working scratchpad (plans, lessons, ephemeral artefacts)
 tasks/
 *.local.md
+*.pt
